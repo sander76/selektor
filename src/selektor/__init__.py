@@ -3,9 +3,40 @@ from __future__ import annotations
 import argparse
 import bisect
 import curses
+import os
 import re
 import sys
 from pathlib import Path
+
+
+ORANGE_COLOR = 208
+MATCH_HIGHLIGHT_PAIR = 1
+SELECTED_MATCH_PAIR = 2
+
+
+def _ensure_color_terminal() -> None:
+    term = os.environ.get("TERM", "").lower()
+    if not term or term == "dumb":
+        os.environ["TERM"] = "xterm-256color"
+
+
+def _configure_curses_colors() -> None:
+    if not curses.has_colors():
+        return
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+    except curses.error:
+        pass
+    orange = ORANGE_COLOR if curses.COLORS > ORANGE_COLOR else curses.COLOR_YELLOW
+    try:
+        curses.init_pair(MATCH_HIGHLIGHT_PAIR, orange, -1)
+    except curses.error:
+        pass
+    try:
+        curses.init_pair(SELECTED_MATCH_PAIR, orange, -1)
+    except curses.error:
+        pass
 
 
 def _match_ranges(
@@ -38,7 +69,7 @@ def _match_ranges(
     return ranges
 
 
-def _browse(
+def _browse_on_terminal(
     matches: list[re.Match[str]], lines: list[str], line_starts: list[int]
 ) -> str | None:
     ranges = _match_ranges(matches, lines, line_starts)
@@ -53,6 +84,7 @@ def _browse(
         rows, columns = screen.getmaxyx()
         content_rows = max(rows - 2, 1)
         usable_columns = max(columns - 1, 0)
+        has_color = curses.has_colors()
         top = max(0, min(focus_line - content_rows // 2, len(lines) - content_rows))
         screen.erase()
 
@@ -76,9 +108,17 @@ def _browse(
                     if match_start < end and match_end > start
                 ]
                 if selected in active:
-                    attribute = curses.A_REVERSE | curses.A_BOLD
+                    attribute = (
+                        curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE
+                        if has_color
+                        else curses.A_UNDERLINE
+                    )
                 elif active:
-                    attribute = curses.A_UNDERLINE
+                    attribute = (
+                        curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD
+                        if has_color
+                        else curses.A_UNDERLINE
+                    )
                 else:
                     attribute = curses.A_NORMAL
                 try:
@@ -101,7 +141,9 @@ def _browse(
 
     def run(screen: curses.window) -> str | None:
         nonlocal selected, focus_line
+        _ensure_color_terminal()
         try:
+            _configure_curses_colors()
             curses.curs_set(0)
         except curses.error:
             pass
@@ -127,31 +169,77 @@ def _browse(
     return curses.wrapper(run)
 
 
+def _browse(
+    matches: list[re.Match[str]], lines: list[str], line_starts: list[int]
+) -> str | None:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return _browse_on_terminal(matches, lines, line_starts)
+
+    try:
+        terminal_fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError as error:
+        raise RuntimeError("interactive selection requires a terminal") from error
+
+    saved_stdin = os.dup(0)
+    saved_stdout = os.dup(1)
+    try:
+        os.dup2(terminal_fd, 0)
+        os.dup2(terminal_fd, 1)
+        return _browse_on_terminal(matches, lines, line_starts)
+    finally:
+        os.dup2(saved_stdin, 0)
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdin)
+        os.close(saved_stdout)
+        os.close(terminal_fd)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Browse a file's regex matches in the terminal."
+        description=(
+            "Browse regex matches in a file or piped input. "
+            "When FILE is omitted, read text from stdin."
+        )
     )
-    parser.add_argument("file", type=Path, help="file to search")
-    parser.add_argument("regex", help="regular expression to match")
+    parser.add_argument(
+        "source_or_regex",
+        help="file to search, or regex when reading piped input",
+    )
+    parser.add_argument(
+        "regex",
+        nargs="?",
+        help="regular expression to match (omit when reading piped input)",
+    )
     args = parser.parse_args(argv)
 
-    try:
-        text = args.file.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        parser.error(f"cannot read {args.file}: {error}")
+    if args.regex is None:
+        if sys.stdin.isatty():
+            parser.error("provide a file, or pipe text to stdin with a regex")
+        regex = args.source_or_regex
+        try:
+            text = sys.stdin.read()
+        except UnicodeError as error:
+            parser.error(f"cannot decode stdin as UTF-8: {error}")
+    else:
+        file = Path(args.source_or_regex)
+        regex = args.regex
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            parser.error(f"cannot read {file}: {error}")
 
     try:
-        matches = list(re.finditer(args.regex, text))
+        matches = list(re.finditer(regex, text))
     except re.error as error:
         parser.error(f"invalid regular expression: {error}")
-
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        parser.error("interactive selection requires a terminal")
 
     lines = text.split("\n")
     line_starts = [0]
     line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
-    selected_text = _browse(matches, lines, line_starts)
+    try:
+        selected_text = _browse(matches, lines, line_starts)
+    except RuntimeError as error:
+        parser.error(str(error))
     if selected_text is None:
         return 1
     print(selected_text)

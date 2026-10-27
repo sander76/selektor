@@ -8,7 +8,13 @@ to stdout. Press `q` or Escape to quit without selecting.
 ```sh
 selektor path/to/file 'your-regex'
 some-command | selektor 'your-regex'
+
+selektor path/to/file 'first-regex' 'second-regex'
+some-command | selektor 'first-regex' 'second-regex'
 ```
+
+Matches from all supplied regexes are browsed in the order they occur in the
+input. If matches overlap or begin at the same position, each is selectable.
 
 Matches are highlighted in bright orange in the file view. The current
 selection uses the terminal's normal text color on a bright orange background.

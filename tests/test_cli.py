@@ -1,7 +1,6 @@
 import fcntl
 import os
 import pty
-import re
 import select
 import signal
 import struct
@@ -12,17 +11,25 @@ from pathlib import Path
 
 import pytest
 
+from selektor.app import find_matches
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_FILE = Path(__file__).with_name("test_input.txt")
 HAS_TERMINAL = os.name == "posix" and Path("/dev/tty").exists()
 
 
+def test_matches_multiple_regexes_in_input_order() -> None:
+    matches = find_matches([r"c.t", r"b.."], "bar cat bat")
+
+    assert [match.group(0) for match in matches] == ["bar", "cat", "bat"]
+
+
 @pytest.mark.skipif(not HAS_TERMINAL, reason="requires a Unix terminal")
 @pytest.mark.parametrize("use_pipe", [True, False], ids=["piped-stdin", "file-argument"])
 def test_selects_match_and_writes_only_to_stdout(use_pipe: bool) -> None:
     source = INPUT_FILE.read_bytes()
-    expected = (re.findall(r".*\.py", source.decode("utf-8"))[1] + "\n").encode()
+    expected = b"another_file.py\n"
     stdout_read, stdout_write = os.pipe()
     pid, terminal_fd = pty.fork()
 
@@ -42,7 +49,8 @@ def test_selects_match_and_writes_only_to_stdout(use_pipe: bool) -> None:
             [str(PROJECT_ROOT / "src"), env.get("PYTHONPATH", "")]
         )
         env["TERM"] = "xterm"
-        arguments = [r".*\.py"] if use_pipe else [str(INPUT_FILE), r".*\.py"]
+        patterns = [r"some_file\.py", r"another_file\.py"]
+        arguments = patterns if use_pipe else [str(INPUT_FILE), *patterns]
         os.execve(sys.executable, [sys.executable, "-m", "selektor", *arguments], env)
 
     os.close(stdout_write)

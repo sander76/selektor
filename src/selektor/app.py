@@ -8,21 +8,28 @@ from pathlib import Path
 from .terminal import browse
 
 
+def find_matches(patterns: list[str], text: str) -> list[re.Match[str]]:
+    matches = [
+        match
+        for pattern in patterns
+        for match in re.finditer(pattern, text)
+    ]
+    return sorted(matches, key=lambda match: match.start())
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Browse regex matches in a file or piped input. "
-            "When FILE is omitted, read text from stdin."
+            "When FILE is omitted, read text from stdin. Multiple regexes may be "
+            "provided."
         )
     )
     parser.add_argument(
-        "source_or_regex",
-        help="file to search, or regex when reading piped input",
-    )
-    parser.add_argument(
-        "regex",
-        nargs="?",
-        help="regular expression to match (omit when reading piped input)",
+        "source_and_patterns",
+        nargs="+",
+        metavar="FILE_OR_REGEX",
+        help="file followed by regexes, or regexes when reading piped input",
     )
     return parser
 
@@ -30,25 +37,34 @@ def build_parser() -> argparse.ArgumentParser:
 def run(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    source_and_patterns = args.source_and_patterns
 
-    if args.regex is None:
-        if sys.stdin.isatty():
-            parser.error("provide a file, or pipe text to stdin with a regex")
-        pattern = args.source_or_regex
-        try:
-            text = sys.stdin.read()
-        except UnicodeError as error:
-            parser.error(f"cannot decode stdin as UTF-8: {error}")
-    else:
-        file = Path(args.source_or_regex)
-        pattern = args.regex
+    if sys.stdin.isatty():
+        if len(source_and_patterns) < 2:
+            parser.error("provide a file followed by at least one regex")
+        file = Path(source_and_patterns[0])
+        patterns = source_and_patterns[1:]
         try:
             text = file.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             parser.error(f"cannot read {file}: {error}")
+    else:
+        file = Path(source_and_patterns[0])
+        if len(source_and_patterns) > 1 and file.is_file():
+            patterns = source_and_patterns[1:]
+            try:
+                text = file.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as error:
+                parser.error(f"cannot read {file}: {error}")
+        else:
+            patterns = source_and_patterns
+            try:
+                text = sys.stdin.read()
+            except UnicodeError as error:
+                parser.error(f"cannot decode stdin as UTF-8: {error}")
 
     try:
-        matches = list(re.finditer(pattern, text))
+        matches = find_matches(patterns, text)
     except re.error as error:
         parser.error(f"invalid regular expression: {error}")
 

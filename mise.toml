@@ -11,5 +11,11 @@ gitopen='gh browse -b $(git branch --show-current)'
 _.python.venv = { path = ".venv", create = true }
 
 [hooks]
-enter = "uv pip install pytest-pudb-resurrected ptpython"
+enter = "uv pip install pytest-pudb-resurrected ptpython pre-commit"
 
+[tasks.qa]
+description = "run linting and formatting"
+run = [
+	'uv run ruff format',
+    'uv run ruff check --fix'
+]

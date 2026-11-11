@@ -1,3 +1,4 @@
+import curses
 import fcntl
 import os
 import pty
@@ -13,8 +14,8 @@ from unittest.mock import Mock
 import pytest
 
 from selektor.app import run
-from selektor.matching import MatchRange, find_matches, match_ranges
-
+from selektor.matching import find_matches
+from selektor.terminal import LineCollection
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_FILE = Path(__file__).with_name("test_input.txt")
@@ -24,25 +25,55 @@ HAS_TERMINAL = os.name == "posix" and Path("/dev/tty").exists()
 def test_matches_multiple_regexes_in_input_order() -> None:
     matches = find_matches([r"c.t", r"b.."], "bar cat bat")
 
-    assert [match.group(0) for match in matches] == ["bar", "cat", "bat"]
+    assert [match.match.group(0) for match in matches] == ["bar", "cat", "bat"]
 
 
 def test_ignores_zero_width_matches() -> None:
     matches = find_matches([r"(?=a)", "a"], "a")
 
-    assert [match.group(0) for match in matches] == ["a"]
+    assert [match.match.group(0) for match in matches] == ["a"]
 
 
-def test_maps_single_line_matches_to_line_ranges() -> None:
-    first_line: str = "foo"
-    second_line: str = "bar"
-    lines = [first_line, second_line]
-    text = "\n".join(lines)
+def test_line_collection_tracks_matches_and_selection() -> None:
+    text = "foo bar\nfoo"
     matches = find_matches(["foo", "bar"], text)
+    collection = LineCollection(text, matches)
+    first, second, third = collection.matches
 
-    assert match_ranges(matches, lines, [0, 4]) == [
-        [MatchRange(0, 3, 0)],
-        [MatchRange(0, 3, 1)],
+    assert collection.lines[0].matches == [first, second]
+    assert collection.lines[1].matches == [third]
+    assert first.selected
+
+    collection.select_next()
+    assert not first.selected
+    assert second.selected
+
+    collection.select_previous()
+    assert first.selected
+    assert not second.selected
+
+    collection.select_previous()
+    assert third.selected
+    assert collection.selected_line_index == 1
+    assert collection.selected_text == "foo"
+
+
+def test_line_render_uses_selected_match_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "foo bar"
+    collection = LineCollection(text, find_matches(["foo", "bar"], text))
+    collection.select_next()
+    screen = Mock()
+    monkeypatch.setattr("selektor.terminal.curses.color_pair", lambda pair: pair)
+
+    collection.lines[0].render(screen, 0, len(text), True)
+
+    rendered = [(call.args[2], call.args[3]) for call in screen.addstr.call_args_list]
+    assert rendered == [
+        ("foo", 1 | curses.A_BOLD),
+        (" ", curses.A_NORMAL),
+        ("bar", 2 | curses.A_UNDERLINE),
     ]
 
 
@@ -93,7 +124,7 @@ def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
         env["PYTHONPATH"] = os.pathsep.join(
             [str(PROJECT_ROOT / "src"), env.get("PYTHONPATH", "")]
         )
-        env["TERM"] = "xterm"
+        env["TERM"] = "xterm-256color"
         patterns = [r"some_file\.py", r"another_file\.py"]
         if input_mode == "stdin-marker":
             arguments = ["-", *patterns]

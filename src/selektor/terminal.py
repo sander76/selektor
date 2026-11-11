@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import bisect
 import curses
 import os
-import re
 import sys
+from dataclasses import dataclass, field
+from itertools import pairwise
 
-from .matching import find_matches, match_ranges
+from .matching import Matched, find_matches
 
 ORANGE_COLOR = 20
 MATCH_HIGHLIGHT_PAIR = 1
@@ -57,13 +57,106 @@ def configure_curses_colors() -> None:
 
     curses.init_pair(MATCH_HIGHLIGHT_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
     curses.init_pair(SELECTED_MATCH_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
-    curses.init_pair(WINDOW_BACKGROUND_PAIR, curses.COLOR_WHITE, WINDOW_BACKGROUND_COLOR)
+    curses.init_pair(
+        WINDOW_BACKGROUND_PAIR, curses.COLOR_WHITE, WINDOW_BACKGROUND_COLOR
+    )
 
 
-def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_starts: list[int]) -> str | None:
-    ranges = match_ranges(matches, lines, line_starts)
-    selected = 0
-    focus_line = min(bisect.bisect_right(line_starts, matches[0].start()) - 1, len(lines) - 1) if matches else 0
+@dataclass
+class Line:
+    text: str
+    matches: list[Matched] = field(default_factory=list)
+
+    def render(
+        self,
+        screen: curses.window,
+        screen_row: int,
+        usable_columns: int,
+        has_color: bool,
+    ) -> None:
+        # Split the line at match edges so each rendered segment has one style.
+        boundaries = {0, min(len(self.text), usable_columns)}
+        for match in self.matches:
+            if match.start < usable_columns:
+                boundaries.add(match.start)
+                boundaries.add(min(match.end, usable_columns))
+        points = sorted(boundaries)
+
+        for start, end in pairwise(points):
+            if start >= end:
+                continue
+            active_matches = [
+                match
+                for match in self.matches
+                if match.start < end and match.end > start
+            ]
+            if any(match.selected for match in active_matches):
+                attribute = (
+                    curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE
+                    if has_color
+                    else curses.A_UNDERLINE
+                )
+            elif active_matches:
+                attribute = (
+                    curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD
+                    if has_color
+                    else curses.A_UNDERLINE
+                )
+            else:
+                attribute = curses.A_NORMAL
+            try:
+                screen.addstr(screen_row, start, self.text[start:end], attribute)
+            except curses.error:
+                pass
+
+
+class LineCollection:
+    def __init__(self, text: str, matches: list[Matched]) -> None:
+        self.lines = tuple(Line(line) for line in text.split("\n"))
+        self.matches = matches
+        for match in self.matches:
+            self.lines[match.line_index].matches.append(match)
+
+        self._selected_index: int | None = None
+        if self.matches:
+            self._selected_index = 0
+            self.matches[0].selected = True
+
+    @property
+    def selected_line_index(self) -> int:
+        if self._selected_index is None:
+            return 0
+        return self.matches[self._selected_index].line_index
+
+    @property
+    def selected_number(self) -> int:
+        if self._selected_index is None:
+            return 0
+        return self._selected_index + 1
+
+    @property
+    def selected_text(self) -> str | None:
+        if self._selected_index is None:
+            return None
+        return self.matches[self._selected_index].match.group(0)
+
+    def select_next(self) -> None:
+        self._select_by(1)
+
+    def select_previous(self) -> None:
+        self._select_by(-1)
+
+    def _select_by(self, offset: int) -> None:
+        if self._selected_index is None:
+            return
+        self.matches[self._selected_index].selected = False
+
+        # round trip selection. once outer limit index is selected, it all starts over.
+        self._selected_index = (self._selected_index + offset) % len(self.matches)
+        self.matches[self._selected_index].selected = True
+
+
+def browse_on_terminal(line_collection: LineCollection) -> str | None:
 
     def draw(screen: curses.window) -> None:
         # Reserve the last row for the footer and the last column to avoid wrapping.
@@ -73,49 +166,29 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
 
         has_color = curses.has_colors()
         # Keep the line containing the focused match near the vertical center.
-        top = max(0, min(focus_line - content_rows // 2, len(lines) - content_rows))
+        top = max(
+            0,
+            min(
+                line_collection.selected_line_index - content_rows // 2,
+                len(line_collection.lines) - content_rows,
+            ),
+        )
 
         screen.erase()
 
-        for screen_row in range(min(content_rows, len(lines) - top)):
+        for screen_row in range(min(content_rows, len(line_collection.lines) - top)):
             # Translate the visible row into its corresponding input line.
             line_index = top + screen_row
-            line = lines[line_index]
-            intervals = ranges[line_index]
-            # Split the line at match edges so each rendered segment has one style.
-            boundaries = {0, min(len(line), usable_columns)}
-            for match_range in intervals:
-                if match_range.start < usable_columns:
-                    boundaries.add(match_range.start)
-                    boundaries.add(min(match_range.end, usable_columns))
-            points = sorted(boundaries)
+            line_collection.lines[line_index].render(
+                screen, screen_row, usable_columns, has_color
+            )
 
-            # Find which matches overlap each segment to determine its highlight.
-            for start, end in zip(points, points[1:]):
-                if start >= end:
-                    continue
-                active = [
-                    match_range.match_index
-                    for match_range in intervals
-                    if match_range.start < end and match_range.end > start
-                ]
-                if selected in active:
-                    attribute = (
-                        curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE if has_color else curses.A_UNDERLINE
-                    )
-                elif active:
-                    attribute = (
-                        curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD if has_color else curses.A_UNDERLINE
-                    )
-                else:
-                    attribute = curses.A_NORMAL
-                try:
-                    screen.addstr(screen_row, start, line[start:end], attribute)
-                except curses.error:
-                    pass
-
-        if matches:
-            footer = f"Match {selected + 1}/{len(matches)}  n: next  Enter: select  q: quit"
+        if line_collection.matches:
+            footer = (
+                f"Match {line_collection.selected_number}/"
+                f"{len(line_collection.matches)}  n: next  p: previous  "
+                "Enter: select  q: quit"
+            )
         else:
             footer = "No matches found. Press Enter or q to quit."
         try:
@@ -125,7 +198,6 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
         screen.refresh()
 
     def run(screen: curses.window) -> str | None:
-        nonlocal selected, focus_line
         ensure_color_terminal()
         try:
             configure_curses_colors()
@@ -140,31 +212,26 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
             key = screen.getch()
             if key in (ord("q"), 27):
                 return None
-            if not matches:
+            if not line_collection.matches:
                 if key in (curses.KEY_ENTER, 10, 13):
                     return None
                 continue
             if key == ord("n"):
-                # todo: explain this.
-                selected = (selected + 1) % len(matches)
-                focus_line = min(
-                    bisect.bisect_right(line_starts, matches[selected].start()) - 1,
-                    len(lines) - 1,
-                )
+                line_collection.select_next()
+            elif key == ord("p"):
+                line_collection.select_previous()
             elif key in (curses.KEY_ENTER, 10, 13):
-                return matches[selected].group(0)
+                return line_collection.selected_text
 
     return curses.wrapper(run)
 
 
 def browse(text: str, patterns: list[str]) -> str | None:
     matches = find_matches(patterns, text)
-    lines = text.split("\n")
-    line_starts = [0]
-    line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
+    line_collection = LineCollection(text, matches)
 
     if sys.stdin.isatty() and sys.stdout.isatty():
-        return browse_on_terminal(matches, lines, line_starts)
+        return browse_on_terminal(line_collection)
 
     try:
         terminal_fd = os.open("/dev/tty", os.O_RDWR)
@@ -176,7 +243,7 @@ def browse(text: str, patterns: list[str]) -> str | None:
     try:
         os.dup2(terminal_fd, 0)
         os.dup2(terminal_fd, 1)
-        return browse_on_terminal(matches, lines, line_starts)
+        return browse_on_terminal(line_collection)
     finally:
         os.dup2(saved_stdin, 0)
         os.dup2(saved_stdout, 1)

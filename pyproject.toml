@@ -13,8 +13,13 @@ selektor = "selektor:main"
 requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
 
+[[tool.uv.index]]
+url = "https://alliander.jfrog.io/artifactory/api/pypi/pypi-all/simple/"
+default = true
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ruff>=0.17.3",
     "ty>=0.0.91",
 ]

@@ -13,7 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from selektor.app import run
-from selektor.matching import find_matches
+from selektor.matching import MatchRange, find_matches, match_ranges
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +31,19 @@ def test_ignores_zero_width_matches() -> None:
     matches = find_matches([r"(?=a)", "a"], "a")
 
     assert [match.group(0) for match in matches] == ["a"]
+
+
+def test_maps_single_line_matches_to_line_ranges() -> None:
+    first_line: str = "foo"
+    second_line: str = "bar"
+    lines = [first_line, second_line]
+    text = "\n".join(lines)
+    matches = find_matches(["foo", "bar"], text)
+
+    assert match_ranges(matches, lines, [0, 4]) == [
+        [MatchRange(0, 3, 0)],
+        [MatchRange(0, 3, 1)],
+    ]
 
 
 def test_dash_argument_reads_stdin_even_when_stdin_is_a_terminal(

@@ -66,17 +66,23 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
     focus_line = min(bisect.bisect_right(line_starts, matches[0].start()) - 1, len(lines) - 1) if matches else 0
 
     def draw(screen: curses.window) -> None:
+        # Reserve the last row for the footer and the last column to avoid wrapping.
         rows, columns = screen.getmaxyx()
         content_rows = max(rows - 2, 1)
         usable_columns = max(columns - 1, 0)
+
         has_color = curses.has_colors()
+        # Keep the line containing the focused match near the vertical center.
         top = max(0, min(focus_line - content_rows // 2, len(lines) - content_rows))
+
         screen.erase()
 
         for screen_row in range(min(content_rows, len(lines) - top)):
+            # Translate the visible row into its corresponding input line.
             line_index = top + screen_row
             line = lines[line_index]
             intervals = ranges[line_index]
+            # Split the line at match edges so each rendered segment has one style.
             boundaries = {0, min(len(line), usable_columns)}
             for match_range in intervals:
                 if match_range.start < usable_columns:
@@ -84,6 +90,7 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
                     boundaries.add(min(match_range.end, usable_columns))
             points = sorted(boundaries)
 
+            # Find which matches overlap each segment to determine its highlight.
             for start, end in zip(points, points[1:]):
                 if start >= end:
                     continue
@@ -138,6 +145,7 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
                     return None
                 continue
             if key == ord("n"):
+                # todo: explain this.
                 selected = (selected + 1) % len(matches)
                 focus_line = min(
                     bisect.bisect_right(line_starts, matches[selected].start()) - 1,

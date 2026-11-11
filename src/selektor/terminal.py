@@ -5,7 +5,8 @@ import curses
 import os
 import re
 import sys
-from dataclasses import dataclass
+
+from .matching import match_ranges
 
 ORANGE_COLOR = 20
 MATCH_HIGHLIGHT_PAIR = 1
@@ -57,35 +58,6 @@ def configure_curses_colors() -> None:
     curses.init_pair(MATCH_HIGHLIGHT_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
     curses.init_pair(SELECTED_MATCH_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
     curses.init_pair(WINDOW_BACKGROUND_PAIR, curses.COLOR_WHITE, WINDOW_BACKGROUND_COLOR)
-
-
-@dataclass(frozen=True)
-class MatchRange:
-    start: int
-    end: int
-    match_index: int
-
-
-def match_ranges(
-    matches: list[re.Match[str]], lines: list[str], line_starts: list[int]
-) -> list[list[MatchRange]]:
-    """Map match spans to per-line character ranges for terminal highlighting."""
-    ranges: list[list[MatchRange]] = [[] for _ in lines]
-
-    for match_index, match in enumerate(matches):
-        start, end = match.span()
-        first_line = bisect.bisect_right(line_starts, start) - 1
-        last_line = bisect.bisect_right(line_starts, end - 1) - 1
-        for line_index in range(first_line, last_line + 1):
-            line_start = line_starts[line_index]
-            visible_start = max(start, line_start) - line_start
-            visible_end = min(end, line_start + len(lines[line_index])) - line_start
-            if visible_start < visible_end:
-                ranges[line_index].append(
-                    MatchRange(visible_start, visible_end, match_index)
-                )
-
-    return ranges
 
 
 def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_starts: list[int]) -> str | None:

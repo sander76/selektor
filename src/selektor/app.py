@@ -5,17 +5,8 @@ import re
 import sys
 from pathlib import Path
 
+from .matching import find_matches
 from .terminal import browse
-
-
-def find_matches(patterns: list[str], text: str) -> list[re.Match[str]]:
-    matches = [
-        match
-        for pattern in patterns
-        for match in re.finditer(pattern, text)
-        if match.start() < match.end()
-    ]
-    return sorted(matches, key=lambda match: match.start())
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -12,7 +12,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from selektor.app import find_matches, run
+from selektor.app import run
+from selektor.matching import find_matches
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

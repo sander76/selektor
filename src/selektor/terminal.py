@@ -183,11 +183,12 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
                 screen, screen_row, usable_columns, has_color
             )
 
-        if line_collection.matches:
+        selected_text = line_collection.selected_text
+        if selected_text is not None:
             footer = (
                 f"Match {line_collection.selected_number}/"
-                f"{len(line_collection.matches)}  n: next  p: previous  "
-                "Enter: select  q: quit"
+                f"{len(line_collection.matches)}: {selected_text}  "
+                "n: next  p: previous  Enter: select  q: quit"
             )
         else:
             footer = "No matches found. Press Enter or q to quit."
@@ -218,7 +219,7 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
                 continue
             if key == ord("n"):
                 line_collection.select_next()
-            elif key == ord("p"):
+            elif key == ord("N"):
                 line_collection.select_previous()
             elif key in (curses.KEY_ENTER, 10, 13):
                 return line_collection.selected_text

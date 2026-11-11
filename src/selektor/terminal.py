@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass, field
 from itertools import pairwise
 
+from .matchers import open_in_pycharm, open_in_vim
 from .matching import Matched, find_matches
 
 ORANGE_COLOR = 20
@@ -119,8 +120,8 @@ class LineCollection:
 
         self._selected_index: int | None = None
         if self.matches:
-            self._selected_index = 0
-            self.matches[0].selected = True
+            self._selected_index = len(self.matches) - 1
+            self.matches[self._selected_index].selected = True
 
     @property
     def selected_line_index(self) -> int:
@@ -157,22 +158,27 @@ class LineCollection:
 
 
 def browse_on_terminal(line_collection: LineCollection) -> str | None:
+    first_draw = True
 
     def draw(screen: curses.window) -> None:
+        nonlocal first_draw
         # Reserve the last row for the footer and the last column to avoid wrapping.
         rows, columns = screen.getmaxyx()
         content_rows = max(rows - 2, 1)
         usable_columns = max(columns - 1, 0)
 
         has_color = curses.has_colors()
-        # Keep the line containing the focused match near the vertical center.
-        top = max(
-            0,
-            min(
-                line_collection.selected_line_index - content_rows // 2,
-                len(line_collection.lines) - content_rows,
-            ),
-        )
+        if first_draw:
+            top = max(0, len(line_collection.lines) - content_rows)
+        else:
+            # Keep the line containing the focused match near the vertical center.
+            top = max(
+                0,
+                min(
+                    line_collection.selected_line_index - content_rows // 2,
+                    len(line_collection.lines) - content_rows,
+                ),
+            )
 
         screen.erase()
 
@@ -183,12 +189,13 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
                 screen, screen_row, usable_columns, has_color
             )
 
+        first_draw = False
         selected_text = line_collection.selected_text
         if selected_text is not None:
             footer = (
                 f"Match {line_collection.selected_number}/"
                 f"{len(line_collection.matches)}: {selected_text}  "
-                "n: next  p: previous  Enter: select  q: quit"
+                "n: next  N: previous  ov: vim  Enter: select  q: quit"
             )
         else:
             footer = "No matches found. Press Enter or q to quit."
@@ -208,9 +215,21 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
         except curses.error:
             pass
         screen.keypad(True)
+        pending_open = False
         while True:
             draw(screen)
             key = screen.getch()
+
+            if pending_open:
+                assert (
+                    line_collection.selected_text is not None
+                )  # make type checker happy
+                if key == ord("v"):
+                    return open_in_vim(line_collection.selected_text)
+                if key == ord("p"):
+                    return open_in_pycharm(line_collection.selected_text)
+
+            pending_open = False
             if key in (ord("q"), 27):
                 return None
             if not line_collection.matches:
@@ -221,6 +240,9 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
                 line_collection.select_next()
             elif key == ord("N"):
                 line_collection.select_previous()
+            elif key == ord("o"):
+                if line_collection.selected_text is not None:
+                    pending_open = True
             elif key in (curses.KEY_ENTER, 10, 13):
                 return line_collection.selected_text
 

@@ -15,7 +15,7 @@ import pytest
 
 from selektor.app import run
 from selektor.matching import find_matches
-from selektor.terminal import LineCollection
+from selektor.terminal import LineCollection, browse_on_terminal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_FILE = Path(__file__).with_name("test_input.txt")
@@ -42,20 +42,63 @@ def test_line_collection_tracks_matches_and_selection() -> None:
 
     assert collection.lines[0].matches == [first, second]
     assert collection.lines[1].matches == [third]
-    assert first.selected
+    assert third.selected
 
     collection.select_next()
-    assert not first.selected
-    assert second.selected
-
-    collection.select_previous()
     assert first.selected
-    assert not second.selected
+    assert not third.selected
 
     collection.select_previous()
     assert third.selected
-    assert collection.selected_line_index == 1
-    assert collection.selected_text == "foo"
+    assert not first.selected
+
+    collection.select_previous()
+    assert second.selected
+    assert collection.selected_line_index == 0
+    assert collection.selected_text == "bar"
+
+
+def test_initial_terminal_view_selects_last_match_and_shows_bottom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Screen:
+        def __init__(self) -> None:
+            self.rendered: list[tuple[int, str]] = []
+
+        def getmaxyx(self) -> tuple[int, int]:
+            return 4, 40
+
+        def erase(self) -> None:
+            pass
+
+        def addstr(self, row: int, column: int, text: str, attribute: int) -> None:
+            self.rendered.append((row, text))
+
+        def addnstr(
+            self, row: int, column: int, text: str, width: int, attribute: int
+        ) -> None:
+            pass
+
+        def refresh(self) -> None:
+            pass
+
+        def keypad(self, enabled: bool) -> None:
+            pass
+
+        def getch(self) -> int:
+            return 10
+
+    text = "line 0\nline 1\nline 2\nline 3\nlast match"
+    collection = LineCollection(text, find_matches(["line 0", "last match"], text))
+    screen = Screen()
+    monkeypatch.setattr("selektor.terminal.curses.wrapper", lambda run: run(screen))
+    monkeypatch.setattr("selektor.terminal.curses.has_colors", lambda: False)
+    monkeypatch.setattr("selektor.terminal.curses.curs_set", lambda visibility: None)
+    monkeypatch.setattr("selektor.terminal.ensure_color_terminal", lambda: None)
+    monkeypatch.setattr("selektor.terminal.configure_curses_colors", lambda: None)
+
+    assert browse_on_terminal(collection) == "last match"
+    assert screen.rendered == [(0, "line 3"), (1, "last match")]
 
 
 def test_line_render_uses_selected_match_state(
@@ -63,7 +106,6 @@ def test_line_render_uses_selected_match_state(
 ) -> None:
     text = "foo bar"
     collection = LineCollection(text, find_matches(["foo", "bar"], text))
-    collection.select_next()
     screen = Mock()
     monkeypatch.setattr("selektor.terminal.curses.color_pair", lambda pair: pair)
 
@@ -103,9 +145,18 @@ def test_source_and_regex_arguments_are_required(argv: list[str]) -> None:
 
 @pytest.mark.skipif(not HAS_TERMINAL, reason="requires a Unix terminal")
 @pytest.mark.parametrize("input_mode", ["stdin-marker", "file-argument"])
-def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        (b"\r", b"another_file.py\n"),
+        (b"op", b"vim another_file.py\n"),
+    ],
+    ids=["select", "open-in-vim"],
+)
+def test_selects_match_and_writes_only_to_stdout(
+    input_mode: str, keys: bytes, expected: bytes
+) -> None:
     source = INPUT_FILE.read_bytes()
-    expected = b"another_file.py\n"
     stdout_read, stdout_write = os.pipe()
     pid, terminal_fd = pty.fork()
 
@@ -136,9 +187,7 @@ def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
     fcntl.ioctl(terminal_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     terminal_output = bytearray()
     selected_output = bytearray()
-    sent_next = False
-    sent_enter = False
-    output_size_after_next = 0
+    sent_shortcut = False
     status = None
     deadline = time.monotonic() + 10
 
@@ -155,17 +204,9 @@ def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
                 if chunk:
                     selected_output.extend(chunk)
 
-            if not sent_next and b"Match 1/2" in terminal_output:
-                os.write(terminal_fd, b"n")
-                sent_next = True
-                output_size_after_next = len(terminal_output)
-            if (
-                sent_next
-                and not sent_enter
-                and len(terminal_output) > output_size_after_next
-            ):
-                os.write(terminal_fd, b"\r")
-                sent_enter = True
+            if not sent_shortcut and b"Match 2/2" in terminal_output:
+                os.write(terminal_fd, keys)
+                sent_shortcut = True
 
             waited, result = os.waitpid(pid, os.WNOHANG)
             if waited:
@@ -189,8 +230,7 @@ def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
             selected_output.extend(chunk)
 
         assert status == 0
-        assert sent_next
-        assert sent_enter
+        assert sent_shortcut
         assert selected_output == expected
     finally:
         if status is None:

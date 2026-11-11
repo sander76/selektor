@@ -4,4 +4,4 @@ Ut enim ad minim veniam, some_file.py quis nostrud exercitation ullamco laboris 
 Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. 
 Excepteur sint occaecat cupidatat non another_file.py proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 
-sometest.py:10
+test_cli.py:10

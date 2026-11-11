@@ -8,10 +8,11 @@ import sys
 import termios
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
-from selektor.app import find_matches
+from selektor.app import find_matches, run
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -25,9 +26,39 @@ def test_matches_multiple_regexes_in_input_order() -> None:
     assert [match.group(0) for match in matches] == ["bar", "cat", "bat"]
 
 
+def test_ignores_zero_width_matches() -> None:
+    matches = find_matches([r"(?=a)", "a"], "a")
+
+    assert [match.group(0) for match in matches] == ["a"]
+
+
+def test_dash_argument_reads_stdin_even_when_stdin_is_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stdin = Mock()
+    stdin.isatty.return_value = True
+    stdin.read.return_value = "a match"
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(
+        "selektor.app.browse",
+        lambda matches, lines, line_starts: matches[0].group(0),
+    )
+
+    assert run(["-", "match"]) == 0
+    assert capsys.readouterr().out == "match\n"
+
+
+@pytest.mark.parametrize("argv", [[], ["-"]])
+def test_source_and_regex_arguments_are_required(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        run(argv)
+
+    assert error.value.code == 2
+
+
 @pytest.mark.skipif(not HAS_TERMINAL, reason="requires a Unix terminal")
-@pytest.mark.parametrize("use_pipe", [True, False], ids=["piped-stdin", "file-argument"])
-def test_selects_match_and_writes_only_to_stdout(use_pipe: bool) -> None:
+@pytest.mark.parametrize("input_mode", ["stdin-marker", "file-argument"])
+def test_selects_match_and_writes_only_to_stdout(input_mode: str) -> None:
     source = INPUT_FILE.read_bytes()
     expected = b"another_file.py\n"
     stdout_read, stdout_write = os.pipe()
@@ -37,7 +68,7 @@ def test_selects_match_and_writes_only_to_stdout(use_pipe: bool) -> None:
         os.close(stdout_read)
         os.dup2(stdout_write, 1)
         os.close(stdout_write)
-        if use_pipe:
+        if input_mode == "stdin-marker":
             input_read, input_write = os.pipe()
             os.write(input_write, source)
             os.close(input_write)
@@ -50,7 +81,10 @@ def test_selects_match_and_writes_only_to_stdout(use_pipe: bool) -> None:
         )
         env["TERM"] = "xterm"
         patterns = [r"some_file\.py", r"another_file\.py"]
-        arguments = patterns if use_pipe else [str(INPUT_FILE), *patterns]
+        if input_mode == "stdin-marker":
+            arguments = ["-", *patterns]
+        else:
+            arguments = [str(INPUT_FILE), *patterns]
         os.execve(sys.executable, [sys.executable, "-m", "selektor", *arguments], env)
 
     os.close(stdout_write)

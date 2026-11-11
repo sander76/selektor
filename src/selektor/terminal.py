@@ -5,11 +5,39 @@ import curses
 import os
 import re
 import sys
+from dataclasses import dataclass
 
-
-ORANGE_COLOR = 208
+ORANGE_COLOR = 20
 MATCH_HIGHLIGHT_PAIR = 1
 SELECTED_MATCH_PAIR = 2
+WINDOW_BACKGROUND_PAIR = 3
+WINDOW_BACKGROUND_COLOR = 16
+WINDOW_BACKGROUND_FALLBACK = 234
+
+
+class Color:
+    _as_tuple: None | tuple[int, int, int] = None
+
+    def __init__(self, red: int, green: int, blue: int):
+        self._red = red
+        self._green = green
+        self._blue = blue
+
+    def _to_curses_color(self, color: int):
+        return round((color * 1000) / 255)
+
+    def as_tuple(self) -> tuple[int, int, int]:
+        if self._as_tuple is None:
+            self._as_tuple = (
+                self._to_curses_color(self._red),
+                self._to_curses_color(self._green),
+                self._to_curses_color(self._blue),
+            )
+        return self._as_tuple
+
+
+PANELBACKGROUND = Color(20, 33, 61)
+MATCH_COLOR = Color(252, 163, 17)
 
 
 def ensure_color_terminal() -> None:
@@ -22,20 +50,13 @@ def configure_curses_colors() -> None:
     if not curses.has_colors():
         return
     curses.start_color()
-    try:
-        curses.use_default_colors()
-    except curses.error:
-        pass
 
-    orange = ORANGE_COLOR if curses.COLORS > ORANGE_COLOR else curses.COLOR_YELLOW
-    try:
-        curses.init_pair(MATCH_HIGHLIGHT_PAIR, orange, -1)
-    except curses.error:
-        pass
-    try:
-        curses.init_pair(SELECTED_MATCH_PAIR, orange, -1)
-    except curses.error:
-        pass
+    curses.init_color(WINDOW_BACKGROUND_COLOR, *PANELBACKGROUND.as_tuple())
+    curses.init_color(ORANGE_COLOR, *MATCH_COLOR.as_tuple())
+
+    curses.init_pair(MATCH_HIGHLIGHT_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
+    curses.init_pair(SELECTED_MATCH_PAIR, ORANGE_COLOR, WINDOW_BACKGROUND_COLOR)
+    curses.init_pair(WINDOW_BACKGROUND_PAIR, curses.COLOR_WHITE, WINDOW_BACKGROUND_COLOR)
 
 
 def match_ranges(
@@ -45,17 +66,6 @@ def match_ranges(
 
     for match_index, match in enumerate(matches):
         start, end = match.span()
-        if start == end:
-            line_index = min(bisect.bisect_right(line_starts, start) - 1, len(lines) - 1)
-            line_start = line_starts[line_index]
-            line_length = len(lines[line_index])
-            char_index = start - line_start
-            if char_index == line_length and char_index:
-                char_index -= 1
-            if char_index < line_length:
-                ranges[line_index].append((char_index, char_index + 1, match_index))
-            continue
-
         first_line = bisect.bisect_right(line_starts, start) - 1
         last_line = bisect.bisect_right(line_starts, end - 1) - 1
         for line_index in range(first_line, last_line + 1):
@@ -68,16 +78,10 @@ def match_ranges(
     return ranges
 
 
-def browse_on_terminal(
-    matches: list[re.Match[str]], lines: list[str], line_starts: list[int]
-) -> str | None:
+def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_starts: list[int]) -> str | None:
     ranges = match_ranges(matches, lines, line_starts)
     selected = 0
-    focus_line = (
-        min(bisect.bisect_right(line_starts, matches[0].start()) - 1, len(lines) - 1)
-        if matches
-        else 0
-    )
+    focus_line = min(bisect.bisect_right(line_starts, matches[0].start()) - 1, len(lines) - 1) if matches else 0
 
     def draw(screen: curses.window) -> None:
         rows, columns = screen.getmaxyx()
@@ -108,15 +112,11 @@ def browse_on_terminal(
                 ]
                 if selected in active:
                     attribute = (
-                        curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE
-                        if has_color
-                        else curses.A_UNDERLINE
+                        curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE if has_color else curses.A_UNDERLINE
                     )
                 elif active:
                     attribute = (
-                        curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD
-                        if has_color
-                        else curses.A_UNDERLINE
+                        curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD if has_color else curses.A_UNDERLINE
                     )
                 else:
                     attribute = curses.A_NORMAL
@@ -126,10 +126,7 @@ def browse_on_terminal(
                     pass
 
         if matches:
-            footer = (
-                f"Match {selected + 1}/{len(matches)}  "
-                "n: next  Enter: select  q: quit"
-            )
+            footer = f"Match {selected + 1}/{len(matches)}  n: next  Enter: select  q: quit"
         else:
             footer = "No matches found. Press Enter or q to quit."
         try:
@@ -143,6 +140,8 @@ def browse_on_terminal(
         ensure_color_terminal()
         try:
             configure_curses_colors()
+            if curses.has_colors():
+                screen.bkgd(" ", curses.color_pair(WINDOW_BACKGROUND_PAIR))
             curses.curs_set(0)
         except curses.error:
             pass

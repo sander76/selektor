@@ -1,0 +1,15 @@
+[shell_alias]
+py="ptpython"
+
+# cd into the root of the git folder.
+r='cd $(git rev-parse --show-toplevel)'
+
+gitopen='gh browse -b $(git branch --show-current)'
+
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[hooks]
+enter = "uv pip install pytest-pudb-resurrected ptpython"
+

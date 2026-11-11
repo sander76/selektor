@@ -13,6 +13,7 @@ def find_matches(patterns: list[str], text: str) -> list[re.Match[str]]:
         match
         for pattern in patterns
         for match in re.finditer(pattern, text)
+        if match.start() < match.end()
     ]
     return sorted(matches, key=lambda match: match.start())
 
@@ -20,16 +21,20 @@ def find_matches(patterns: list[str], text: str) -> list[re.Match[str]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Browse regex matches in a file or piped input. "
-            "When FILE is omitted, read text from stdin. Multiple regexes may be "
-            "provided."
+            "Browse regex matches in a file or stdin. Provide a file or '-' "
+            "followed by one or more regexes."
         )
     )
     parser.add_argument(
-        "source_and_patterns",
+        "source",
+        metavar="FILE",
+        help="file to read, or '-' to read from stdin",
+    )
+    parser.add_argument(
+        "patterns",
         nargs="+",
-        metavar="FILE_OR_REGEX",
-        help="file followed by regexes, or regexes when reading piped input",
+        metavar="REGEX",
+        help="one or more regular expressions to find",
     )
     return parser
 
@@ -37,31 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
 def run(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    source_and_patterns = args.source_and_patterns
+    patterns = args.patterns
 
-    if sys.stdin.isatty():
-        if len(source_and_patterns) < 2:
-            parser.error("provide a file followed by at least one regex")
-        file = Path(source_and_patterns[0])
-        patterns = source_and_patterns[1:]
+    if args.source == "-":
+        try:
+            text = sys.stdin.read()
+        except UnicodeError as error:
+            parser.error(f"cannot decode stdin as UTF-8: {error}")
+    else:
+        file = Path(args.source)
         try:
             text = file.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as error:
             parser.error(f"cannot read {file}: {error}")
-    else:
-        file = Path(source_and_patterns[0])
-        if len(source_and_patterns) > 1 and file.is_file():
-            patterns = source_and_patterns[1:]
-            try:
-                text = file.read_text(encoding="utf-8")
-            except (OSError, UnicodeError) as error:
-                parser.error(f"cannot read {file}: {error}")
-        else:
-            patterns = source_and_patterns
-            try:
-                text = sys.stdin.read()
-            except UnicodeError as error:
-                parser.error(f"cannot decode stdin as UTF-8: {error}")
 
     try:
         matches = find_matches(patterns, text)

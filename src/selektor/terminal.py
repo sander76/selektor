@@ -59,10 +59,18 @@ def configure_curses_colors() -> None:
     curses.init_pair(WINDOW_BACKGROUND_PAIR, curses.COLOR_WHITE, WINDOW_BACKGROUND_COLOR)
 
 
+@dataclass(frozen=True)
+class MatchRange:
+    start: int
+    end: int
+    match_index: int
+
+
 def match_ranges(
     matches: list[re.Match[str]], lines: list[str], line_starts: list[int]
-) -> list[list[tuple[int, int, int]]]:
-    ranges: list[list[tuple[int, int, int]]] = [[] for _ in lines]
+) -> list[list[MatchRange]]:
+    """Map match spans to per-line character ranges for terminal highlighting."""
+    ranges: list[list[MatchRange]] = [[] for _ in lines]
 
     for match_index, match in enumerate(matches):
         start, end = match.span()
@@ -73,7 +81,9 @@ def match_ranges(
             visible_start = max(start, line_start) - line_start
             visible_end = min(end, line_start + len(lines[line_index])) - line_start
             if visible_start < visible_end:
-                ranges[line_index].append((visible_start, visible_end, match_index))
+                ranges[line_index].append(
+                    MatchRange(visible_start, visible_end, match_index)
+                )
 
     return ranges
 
@@ -96,19 +106,19 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
             line = lines[line_index]
             intervals = ranges[line_index]
             boundaries = {0, min(len(line), usable_columns)}
-            for start, end, _ in intervals:
-                if start < usable_columns:
-                    boundaries.add(start)
-                    boundaries.add(min(end, usable_columns))
+            for match_range in intervals:
+                if match_range.start < usable_columns:
+                    boundaries.add(match_range.start)
+                    boundaries.add(min(match_range.end, usable_columns))
             points = sorted(boundaries)
 
             for start, end in zip(points, points[1:]):
                 if start >= end:
                     continue
                 active = [
-                    match_index
-                    for match_start, match_end, match_index in intervals
-                    if match_start < end and match_end > start
+                    match_range.match_index
+                    for match_range in intervals
+                    if match_range.start < end and match_range.end > start
                 ]
                 if selected in active:
                     attribute = (

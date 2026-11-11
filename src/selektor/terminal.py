@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from .matching import match_ranges
+from .matching import find_matches, match_ranges
 
 ORANGE_COLOR = 20
 MATCH_HIGHLIGHT_PAIR = 1
@@ -149,7 +149,12 @@ def browse_on_terminal(matches: list[re.Match[str]], lines: list[str], line_star
     return curses.wrapper(run)
 
 
-def browse(matches: list[re.Match[str]], lines: list[str], line_starts: list[int]) -> str | None:
+def browse(text: str, patterns: list[str]) -> str | None:
+    matches = find_matches(patterns, text)
+    lines = text.split("\n")
+    line_starts = [0]
+    line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
+
     if sys.stdin.isatty() and sys.stdout.isatty():
         return browse_on_terminal(matches, lines, line_starts)
 

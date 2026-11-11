@@ -42,7 +42,7 @@ def test_dash_argument_reads_stdin_even_when_stdin_is_a_terminal(
     monkeypatch.setattr(sys, "stdin", stdin)
     monkeypatch.setattr(
         "selektor.app.browse",
-        lambda matches, lines, line_starts: matches[0].group(0),
+        lambda text, patterns: "match",
     )
 
     assert run(["-", "match"]) == 0

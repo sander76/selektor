@@ -5,7 +5,6 @@ import re
 import sys
 from pathlib import Path
 
-from .matching import find_matches
 from .terminal import browse
 
 
@@ -48,16 +47,9 @@ def run(argv: list[str] | None = None) -> int:
             parser.error(f"cannot read {file}: {error}")
 
     try:
-        matches = find_matches(patterns, text)
+        selected_text = browse(text, patterns)
     except re.error as error:
         parser.error(f"invalid regular expression: {error}")
-
-    lines = text.split("\n")
-    line_starts = [0]
-    line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
-
-    try:
-        selected_text = browse(matches, lines, line_starts)
     except RuntimeError as error:
         parser.error(str(error))
 

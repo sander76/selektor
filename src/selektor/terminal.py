@@ -18,7 +18,7 @@ WINDOW_BACKGROUND_FALLBACK = 234
 
 
 class Color:
-    _as_tuple: None | tuple[int, int, int] = None
+    _as_tuple: tuple[int, int, int] | None = None
 
     def __init__(self, red: int, green: int, blue: int):
         self._red = red

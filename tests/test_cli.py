@@ -15,7 +15,13 @@ import pytest
 
 from selektor.app import run
 from selektor.matching import find_matches
-from selektor.terminal import LineCollection, browse_on_terminal
+from selektor.terminal import (
+    LineCollection,
+    NormalState,
+    OpeningState,
+    StateManager,
+    browse_on_terminal,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_FILE = Path(__file__).with_name("test_input.txt")
@@ -56,6 +62,22 @@ def test_line_collection_tracks_matches_and_selection() -> None:
     assert second.selected
     assert collection.selected_line_index == 0
     assert collection.selected_text == "bar"
+
+
+@pytest.mark.parametrize("key", [ord("b"), 27])
+def test_opening_state_returns_to_normal_state(key: int) -> None:
+    collection = LineCollection("foo", find_matches(["foo"], "foo"))
+    normal_state = NormalState(line_collection=collection)
+    opening_state = OpeningState(line_collection=collection)
+    state_manager = StateManager(
+        opening_state=opening_state,
+        normal_state=normal_state,
+    )
+    state_manager.set_state(opening_state)
+
+    opening_state.watch_key(key)
+
+    assert state_manager.current_state is normal_state
 
 
 def test_initial_terminal_view_selects_last_match_and_shows_bottom(

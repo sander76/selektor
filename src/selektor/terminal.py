@@ -5,7 +5,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Any
 
 from .matchers import open_in_pycharm, open_in_vim
 from .matching import Matched, find_matches
@@ -31,7 +30,7 @@ class State:
 
     def footer(self) -> str: ...
 
-    def watch_key(self, key: str) -> Any: ...
+    def watch_key(self, key: int) -> Result | None: ...
 
     def add_parent(self, parent: StateManager):
         self._state_manager = parent
@@ -71,14 +70,13 @@ class NormalState(State):
         return footer
 
     def watch_key(self, key: int) -> Result | None:
-
         if key in (ord("q"), 27):
             return Result(None)
         if key in (curses.KEY_ENTER, 10, 13):
             if not self.line_collection.matches:
                 return Result(None)
 
-            return self.line_collection.selected_text
+            return Result(self.line_collection.selected_text)
         if key == ord("n"):
             self.line_collection.select_next()
         elif key == ord("N"):
@@ -90,14 +88,16 @@ class NormalState(State):
 @dataclass
 class OpeningState(State):
     def footer(self) -> str:
-        return "v: open in vim  p: open in pycharm"
+        return "v: open in vim  p: open in pycharm  b: exit open mode"
 
-    def watch_key(self, key: str) -> Result | None:
+    def watch_key(self, key: int) -> Result | None:
         assert self.line_collection.selected_text is not None  # make type checker happy
         if key == ord("v"):
             return Result(open_in_vim(self.line_collection.selected_text))
         if key == ord("p"):
             return Result(open_in_pycharm(self.line_collection.selected_text))
+        if key in (ord("b"), 27):
+            self.state_manager.set_state(self.state_manager.normal_state)
 
 
 class Color:

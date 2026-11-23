@@ -5,6 +5,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from itertools import pairwise
+from typing import Any
 
 from .matchers import open_in_pycharm, open_in_vim
 from .matching import Matched, find_matches
@@ -15,6 +16,88 @@ SELECTED_MATCH_PAIR = 2
 WINDOW_BACKGROUND_PAIR = 3
 WINDOW_BACKGROUND_COLOR = 16
 WINDOW_BACKGROUND_FALLBACK = 234
+
+
+@dataclass
+class State:
+    line_collection: LineCollection
+    _state_manager: StateManager | None = field(default=None, init=False)
+
+    @property
+    def state_manager(self) -> StateManager:
+        if self._state_manager is not None:
+            return self._state_manager
+        raise AttributeError("state manager is None")
+
+    def footer(self) -> str: ...
+
+    def watch_key(self, key: str) -> Any: ...
+
+    def add_parent(self, parent: StateManager):
+        self._state_manager = parent
+
+
+@dataclass
+class StateManager:
+    opening_state: State
+    normal_state: State
+    current_state: State = field(init=False)
+
+    def __post_init__(self):
+        self.opening_state.add_parent(self)
+        self.normal_state.add_parent(self)
+        self.current_state = self.normal_state
+
+    def set_state(self, state: State) -> None:
+        self.current_state = state
+
+
+@dataclass
+class Result:
+    value: str | None
+
+
+@dataclass
+class NormalState(State):
+    def footer(self) -> str:
+        if self.line_collection.selected_text is not None:
+            footer = (
+                f"Match {self.line_collection.selected_number}/"
+                f"{len(self.line_collection.matches)}: {self.line_collection.selected_text}  "
+                "n: next  N: previous  o: open...  Enter: select  q: quit"
+            )
+        else:
+            footer = "No matches found. Press Enter or q to quit."
+        return footer
+
+    def watch_key(self, key: int) -> Result | None:
+
+        if key in (ord("q"), 27):
+            return Result(None)
+        if key in (curses.KEY_ENTER, 10, 13):
+            if not self.line_collection.matches:
+                return Result(None)
+
+            return self.line_collection.selected_text
+        if key == ord("n"):
+            self.line_collection.select_next()
+        elif key == ord("N"):
+            self.line_collection.select_previous()
+        elif key == ord("o") and self.line_collection.selected_text is not None:
+            self.state_manager.set_state(self.state_manager.opening_state)
+
+
+@dataclass
+class OpeningState(State):
+    def footer(self) -> str:
+        return "v: open in vim  p: open in pycharm"
+
+    def watch_key(self, key: str) -> Result | None:
+        assert self.line_collection.selected_text is not None  # make type checker happy
+        if key == ord("v"):
+            return Result(open_in_vim(self.line_collection.selected_text))
+        if key == ord("p"):
+            return Result(open_in_pycharm(self.line_collection.selected_text))
 
 
 class Color:
@@ -159,6 +242,10 @@ class LineCollection:
 
 def browse_on_terminal(line_collection: LineCollection) -> str | None:
     first_draw = True
+    state_manager = StateManager(
+        opening_state=OpeningState(line_collection=line_collection),
+        normal_state=NormalState(line_collection=line_collection),
+    )
 
     def draw(screen: curses.window) -> None:
         nonlocal first_draw
@@ -190,15 +277,8 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
             )
 
         first_draw = False
-        selected_text = line_collection.selected_text
-        if selected_text is not None:
-            footer = (
-                f"Match {line_collection.selected_number}/"
-                f"{len(line_collection.matches)}: {selected_text}  "
-                "n: next  N: previous  ov: vim  Enter: select  q: quit"
-            )
-        else:
-            footer = "No matches found. Press Enter or q to quit."
+
+        footer = state_manager.current_state.footer()
         try:
             screen.addnstr(rows - 1, 0, footer, usable_columns, curses.A_DIM)
         except curses.error:
@@ -215,36 +295,14 @@ def browse_on_terminal(line_collection: LineCollection) -> str | None:
         except curses.error:
             pass
         screen.keypad(True)
-        pending_open = False
+
         while True:
             draw(screen)
             key = screen.getch()
 
-            if pending_open:
-                assert (
-                    line_collection.selected_text is not None
-                )  # make type checker happy
-                if key == ord("v"):
-                    return open_in_vim(line_collection.selected_text)
-                if key == ord("p"):
-                    return open_in_pycharm(line_collection.selected_text)
-
-            pending_open = False
-            if key in (ord("q"), 27):
-                return None
-            if not line_collection.matches:
-                if key in (curses.KEY_ENTER, 10, 13):
-                    return None
-                continue
-            if key == ord("n"):
-                line_collection.select_next()
-            elif key == ord("N"):
-                line_collection.select_previous()
-            elif key == ord("o"):
-                if line_collection.selected_text is not None:
-                    pending_open = True
-            elif key in (curses.KEY_ENTER, 10, 13):
-                return line_collection.selected_text
+            result = state_manager.current_state.watch_key(key)
+            if isinstance(result, Result):
+                return result.value
 
     return curses.wrapper(run)
 

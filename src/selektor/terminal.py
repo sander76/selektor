@@ -3,8 +3,8 @@ from __future__ import annotations
 import curses
 import os
 import sys
+from collections.abc import Generator
 from dataclasses import dataclass, field
-from itertools import pairwise
 
 from .matchers import open_in_pycharm, open_in_vim
 from .matching import Matched, find_matches
@@ -17,8 +17,38 @@ WINDOW_BACKGROUND_COLOR = 16
 WINDOW_BACKGROUND_FALLBACK = 234
 
 
+class Color:
+    _as_tuple: tuple[int, int, int] | None = None
+
+    def __init__(self, red: int, green: int, blue: int):
+        self._red = red
+        self._green = green
+        self._blue = blue
+
+    def _to_curses_color(self, color: int):
+        return round((color * 1000) / 255)
+
+    def as_tuple(self) -> tuple[int, int, int]:
+        if self._as_tuple is None:
+            self._as_tuple = (
+                self._to_curses_color(self._red),
+                self._to_curses_color(self._green),
+                self._to_curses_color(self._blue),
+            )
+        return self._as_tuple
+
+
+PANELBACKGROUND = Color(20, 33, 61)
+MATCH_COLOR = Color(252, 163, 17)
+
+
 @dataclass
 class State:
+    """State object.
+
+    Defines the state of the tui like relevant keybindings and header info.
+    """
+
     line_collection: LineCollection
     _state_manager: StateManager | None = field(default=None, init=False)
 
@@ -100,31 +130,6 @@ class OpeningState(State):
             self.state_manager.set_state(self.state_manager.normal_state)
 
 
-class Color:
-    _as_tuple: tuple[int, int, int] | None = None
-
-    def __init__(self, red: int, green: int, blue: int):
-        self._red = red
-        self._green = green
-        self._blue = blue
-
-    def _to_curses_color(self, color: int):
-        return round((color * 1000) / 255)
-
-    def as_tuple(self) -> tuple[int, int, int]:
-        if self._as_tuple is None:
-            self._as_tuple = (
-                self._to_curses_color(self._red),
-                self._to_curses_color(self._green),
-                self._to_curses_color(self._blue),
-            )
-        return self._as_tuple
-
-
-PANELBACKGROUND = Color(20, 33, 61)
-MATCH_COLOR = Color(252, 163, 17)
-
-
 def ensure_color_terminal() -> None:
     term = os.environ.get("TERM", "").lower()
     if not term or term == "dumb":
@@ -147,70 +152,71 @@ def configure_curses_colors() -> None:
 
 
 @dataclass
-class Line:
-    text: str
-    matches: list[Matched] = field(default_factory=list)
+class CharRenderer:
+    """Renders a single character."""
 
-    def render(
-        self,
-        screen: curses.window,
-        screen_row: int,
-        usable_columns: int,
-        has_color: bool,
-    ) -> None:
-        # Split the line at match edges so each rendered segment has one style.
-        boundaries = {0, min(len(self.text), usable_columns)}
-        for match in self.matches:
-            if match.start < usable_columns:
-                boundaries.add(match.start)
-                boundaries.add(min(match.end, usable_columns))
-        points = sorted(boundaries)
+    char: str
+    matches: list[Matched] = field(default_factory=list, init=False)
 
-        for start, end in pairwise(points):
-            if start >= end:
-                continue
-            active_matches = [
-                match
-                for match in self.matches
-                if match.start < end and match.end > start
-            ]
-            if any(match.selected for match in active_matches):
-                attribute = (
-                    curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE
-                    if has_color
-                    else curses.A_UNDERLINE
-                )
-            elif active_matches:
-                attribute = (
-                    curses.color_pair(MATCH_HIGHLIGHT_PAIR) | curses.A_BOLD
-                    if has_color
-                    else curses.A_UNDERLINE
-                )
-            else:
-                attribute = curses.A_NORMAL
-            try:
-                screen.addstr(screen_row, start, self.text[start:end], attribute)
-            except curses.error:
-                pass
+    def render(self):
+        attribute = curses.A_NORMAL
+        if self.matches:
+            attribute = curses.color_pair(MATCH_HIGHLIGHT_PAIR)
+        if any(match.selected for match in self.matches):
+            attribute = curses.color_pair(SELECTED_MATCH_PAIR) | curses.A_UNDERLINE
+        return attribute
 
 
 class LineCollection:
     def __init__(self, text: str, matches: list[Matched]) -> None:
-        self.lines = tuple(Line(line) for line in text.split("\n"))
-        self.matches = matches
-        for match in self.matches:
-            self.lines[match.line_index].matches.append(match)
+        self.chars = {idx: CharRenderer(char=char) for idx, char in enumerate(text)}
+        for match in matches:
+            for idx in range(match.start, match.end):
+                self.chars[idx].matches.append(match)
 
-        self._selected_index: int | None = None
+        self.matches = matches
         if self.matches:
+            # select the last item by default at startup.
             self._selected_index = len(self.matches) - 1
             self.matches[self._selected_index].selected = True
+        else:
+            self._selected_index = None
 
-    @property
-    def selected_line_index(self) -> int:
-        if self._selected_index is None:
-            return 0
-        return self.matches[self._selected_index].line_index
+    def _get_xy(self, screen_width) -> Generator[tuple[int, int, CharRenderer]]:
+        row: int = 0
+        col: int = 0
+        for char in self.chars.values():
+            if char.char == "\n" or col == screen_width:
+                row += 1
+                col = 0
+            yield row, col, char
+            col += 1
+
+    def render(self, screen: curses.window, screen_height: int, screen_width: int):
+        screen.clear()
+        all_chars = (*self._get_xy(screen_width),)
+        content_height = all_chars[-1][0]  # in rows
+
+        # we always draw the content from the bottom to the top.
+        # if the content height  < screen_height, the top rows are empty
+        # if content height > screen_height, the first rows are cut off.
+        screen_y = 0
+        content_y = 0
+        if content_height > screen_height:
+            content_y = content_height - screen_height
+        if content_height < screen_height:
+            screen_y = screen_height - content_height
+
+        for xychar in all_chars:
+            y, x, char_renderer = xychar
+            if y < content_y:
+                continue
+            screen.addstr(
+                y - content_y + screen_y,
+                x,
+                char_renderer.char,
+                char_renderer.render(),
+            )
 
     @property
     def selected_number(self) -> int:
@@ -241,42 +247,20 @@ class LineCollection:
 
 
 def browse_on_terminal(line_collection: LineCollection) -> str | None:
-    first_draw = True
     state_manager = StateManager(
         opening_state=OpeningState(line_collection=line_collection),
         normal_state=NormalState(line_collection=line_collection),
     )
 
     def draw(screen: curses.window) -> None:
-        nonlocal first_draw
         # Reserve the last row for the footer and the last column to avoid wrapping.
         rows, columns = screen.getmaxyx()
         content_rows = max(rows - 2, 1)
         usable_columns = max(columns - 1, 0)
 
-        has_color = curses.has_colors()
-        if first_draw:
-            top = max(0, len(line_collection.lines) - content_rows)
-        else:
-            # Keep the line containing the focused match near the vertical center.
-            top = max(
-                0,
-                min(
-                    line_collection.selected_line_index - content_rows // 2,
-                    len(line_collection.lines) - content_rows,
-                ),
-            )
-
-        screen.erase()
-
-        for screen_row in range(min(content_rows, len(line_collection.lines) - top)):
-            # Translate the visible row into its corresponding input line.
-            line_index = top + screen_row
-            line_collection.lines[line_index].render(
-                screen, screen_row, usable_columns, has_color
-            )
-
-        first_draw = False
+        line_collection.render(
+            screen, screen_width=usable_columns, screen_height=content_rows
+        )
 
         footer = state_manager.current_state.footer()
         try:
